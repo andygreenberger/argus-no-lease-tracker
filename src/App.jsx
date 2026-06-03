@@ -290,47 +290,390 @@ export default function App() {
     setSaving(false);
   };
 
+
   // ── MODALS ──
   const renderModal = () => {
     if (!modal) return null;
+    if (modal.type === "add_unit") return <AddUnitModal facilities={myFacilities} onAdd={addUnit} onClose={() => setModal(null)} saving={saving} />;
+    if (modal.type === "log_letter1") return <Letter1Modal unit={modal.unit} onSave={logLetter1} onClose={() => setModal(null)} saving={saving} />;
+    if (modal.type === "log_letter2") return <Letter2Modal unit={modal.unit} onSave={logLetter2} onClose={() => setModal(null)} saving={saving} />;
+    if (modal.type === "dm_signoff") return <SignoffModal unit={modal.unit} onSave={dmSignoff} onClose={() => setModal(null)} saving={saving} />;
+    if (modal.type === "view_unit") return <ViewUnitModal unit={modal.unit} fac={getFacility(modal.unit.facility_code)} currentUser={currentUser} onDelete={deleteUnit} onClose={() => setModal(null)} />;
+    return null;
+  };
 
-    if (modal.type === "add_unit") {
-      const [fCode, setFCode] = useState(myFacilities[0]?.code || "");
-      const [uName, setUName] = useState("");
-      const [note, setNote] = useState("");
-      return (
-        <Modal title="Add Unit to No Lease Tracker" onClose={() => setModal(null)}>
-          <Field label="Facility">
-            <select value={fCode} onChange={e => setFCode(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: "1px solid #d1d5db", borderRadius: 7, fontSize: 14 }}>
-              {myFacilities.map(f => <option key={f.code} value={f.code}>{f.name} ({f.code})</option>)}
-            </select>
-          </Field>
-          <Field label="Unit Number / Name">
-            <Input value={uName} onChange={e => setUName(e.target.value)} placeholder="e.g. 142, C27, H213" />
-          </Field>
-          <Field label="Notes" hint="Describe why this unit needs a no lease process">
-            <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Missing lease — tenant has been month-to-month since 2023..." style={{ width: "100%", padding: "9px 12px", border: "1px solid #d1d5db", borderRadius: 7, fontSize: 14, boxSizing: "border-box", resize: "vertical" }} />
-          </Field>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
-            <Btn variant="secondary" onClick={() => setModal(null)}>Cancel</Btn>
-            <Btn onClick={() => addUnit({ facilityCode: fCode, unitName: uName, note })} disabled={!uName.trim() || saving}>Add Unit</Btn>
-          </div>
-        </Modal>
-      );
-    }
+  // ── UNIT ROW ──
+  const UnitRow = ({ unit }) => {
+    const status = getStatus(unit);
+    const fac = getFacility(unit.facility_code);
+    const canEdit = currentUser.role === "manager" || currentUser.role === "admin";
+    const canSignoff = currentUser.role === "dm" || currentUser.role === "admin";
+    const l2Due = unit.letter1_date ? addDays(unit.letter1_date, 32) : null;
+    const signoffDue = unit.letter2_date ? addDays(unit.letter2_date, 32) : null;
 
-    if (modal.type === "log_letter1") {
-      const unit = modal.unit;
-      const [date, setDate] = useState(today());
-      return (
-        <Modal title={`Log Letter 1 — Unit ${unit.unit_number}`} onClose={() => setModal(null)}>
-          <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7280" }}>{unit.facility_name}</p>
-          <Field label="Date Letter 1 Was Sent (via certified mail)" hint="Letter 2 reminder will be sent on Day 32 from this date.">
-            <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} />
-          </Field>
-          <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
-            <p style={{ margin: 0, fontSize: 13, color: "#92400e", fontWeight: 600 }}>⚠ Important</p>
-            <p style={{ margin: "4px 0 0", fontSize: 13, color: "#92400e" }}>By logging this date, you confirm that Letter 1 was sent via certified mail on this date.</p>
+    const nextAction = () => {
+      if (status === "PENDING" && canEdit) return <Btn small onClick={() => setModal({ type: "log_letter1", unit })}>Log Letter 1</Btn>;
+      if (status === "AWAITING_L2" && canEdit) return <Btn small variant="danger" onClick={() => setModal({ type: "log_letter2", unit })}>Log Letter 2 Now</Btn>;
+      if (status === "AWAITING_L2_EARLY" && canEdit) return <Btn small variant="secondary" onClick={() => setModal({ type: "log_letter2", unit })}>Log Letter 2</Btn>;
+      if (status === "AWAITING_SIGNOFF" && canSignoff) return <Btn small variant="success" onClick={() => setModal({ type: "dm_signoff", unit })}>Sign Off</Btn>;
+      if (status === "AWAITING_SIGNOFF_EARLY" && canSignoff) return <Btn small variant="ghost" onClick={() => setModal({ type: "dm_signoff", unit })}>Sign Off Early</Btn>;
+      return null;
+    };
+
+    return (
+      <tr style={{ borderBottom: "1px solid #f3f4f6" }}>
+        <td style={{ padding: "12px 16px" }}>
+          <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#111827" }}>{unit.unit_number}</p>
+          <p style={{ margin: "2px 0 0", fontSize: 12, color: "#6b7280" }}>{unit.facility_name}</p>
+        </td>
+        <td style={{ padding: "12px 16px", fontSize: 12, color: "#6b7280" }}>{fac?.dmName || "—"}</td>
+        <td style={{ padding: "12px 16px" }}><Badge status={status} /></td>
+        <td style={{ padding: "12px 16px", fontSize: 12, color: "#6b7280" }}>
+          {unit.letter1_date && <div>L1: {formatDate(unit.letter1_date)}</div>}
+          {l2Due && !unit.letter2_date && <div style={{ color: today() >= l2Due ? "#dc2626" : "#6b7280" }}>L2 due: {formatDate(l2Due)}</div>}
+          {unit.letter2_date && <div>L2: {formatDate(unit.letter2_date)}</div>}
+          {signoffDue && !unit.dm_approved && <div style={{ color: today() >= signoffDue ? "#7c3aed" : "#6b7280" }}>Signoff due: {formatDate(signoffDue)}</div>}
+        </td>
+        <td style={{ padding: "12px 16px" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {nextAction()}
+            <Btn small variant="ghost" onClick={() => setModal({ type: "view_unit", unit })}>View</Btn>
           </div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
-            <Btn variant="secondary" on
+        </td>
+      </tr>
+    );
+  };
+
+  // ── LOGIN SCREEN ──
+  if (loading) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "system-ui", color: "#6b7280" }}>Loading...</div>;
+
+  if (!currentUser) {
+    return (
+      <div style={{ minHeight: "100vh", background: "linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #1e40af 100%)", display: "flex", alignItems: "center", justifyContent: "center", padding: 20, fontFamily: "'Georgia', serif" }}>
+        <div style={{ background: "#fff", borderRadius: 16, padding: 40, width: "100%", maxWidth: 400, boxShadow: "0 25px 80px rgba(0,0,0,0.4)" }}>
+          <div style={{ textAlign: "center", marginBottom: 32 }}>
+            <div style={{ width: 56, height: 56, background: "#1e40af", borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 14px", fontSize: 26 }}>📋</div>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.5px" }}>Argus No Lease Tracker</h1>
+            <p style={{ margin: "6px 0 0", fontSize: 14, color: "#6b7280", fontFamily: "system-ui" }}>Sign in to continue</p>
+          </div>
+          {dbError && <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "#dc2626" }}>⚠ Database connection error. Check Supabase credentials.</div>}
+          <Field label="Email">
+            <Input type="email" value={loginEmail} onChange={e => setLoginEmail(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} placeholder="your@email.com" />
+          </Field>
+          <Field label="Password">
+            <Input type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} onKeyDown={e => e.key === "Enter" && login()} placeholder="Password" />
+          </Field>
+          {loginErr && <p style={{ margin: "-8px 0 12px", fontSize: 13, color: "#dc2626" }}>{loginErr}</p>}
+          <Btn onClick={login} style={{ width: "100%" }}>Sign In</Btn>
+          <p style={{ margin: "16px 0 0", fontSize: 12, color: "#9ca3af", textAlign: "center", fontFamily: "system-ui" }}>Default password: <code>argus2024</code> · Admin: <code>admin123</code></p>
+        </div>
+      </div>
+    );
+  }
+
+  const roleLabel = { admin: "L2L Admin", dm: "District Manager", manager: "Facility Manager" }[currentUser.role];
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#f8fafc", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      {toast && (
+        <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, background: toast.type === "error" ? "#dc2626" : "#059669", color: "#fff", padding: "12px 20px", borderRadius: 10, fontSize: 14, fontWeight: 600, boxShadow: "0 4px 20px rgba(0,0,0,0.2)", maxWidth: 380 }}>
+          {toast.msg}
+        </div>
+      )}
+      {saving && (
+        <div style={{ position: "fixed", top: 16, left: "50%", transform: "translateX(-50%)", zIndex: 9999, background: "#1e40af", color: "#fff", padding: "8px 20px", borderRadius: 20, fontSize: 13, fontWeight: 600 }}>
+          Saving...
+        </div>
+      )}
+
+      <div style={{ background: "#0f172a", color: "#fff", padding: "0 24px" }}>
+        <div style={{ maxWidth: 1200, margin: "0 auto", display: "flex", alignItems: "center", justifyContent: "space-between", height: 60 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+            <span style={{ fontSize: 18, fontWeight: 700, letterSpacing: "-0.3px" }}>📋 Argus No Lease Tracker</span>
+            <div style={{ display: "flex", gap: 4 }}>
+              {["dashboard", "units", ...(currentUser.role === "admin" ? ["admin"] : [])].map(v => (
+                <button key={v} onClick={() => setView(v)} style={{ background: view === v ? "#1e40af" : "transparent", color: view === v ? "#fff" : "#94a3b8", border: "none", padding: "6px 14px", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: "pointer", textTransform: "capitalize" }}>{v}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ textAlign: "right" }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{currentUser.name}</p>
+              <p style={{ margin: 0, fontSize: 11, color: "#64748b" }}>{roleLabel}</p>
+            </div>
+            <button onClick={logout} style={{ background: "#1e293b", color: "#94a3b8", border: "none", padding: "6px 12px", borderRadius: 7, fontSize: 12, cursor: "pointer" }}>Sign Out</button>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 1200, margin: "0 auto", padding: "24px 24px" }}>
+
+        {view === "dashboard" && (
+          <div>
+            <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Overview</h2>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 16, marginBottom: 28 }}>
+              {[
+                { label: "Total Units", value: stats.total, color: "#1e40af", bg: "#eff6ff", statusKey: "ALL" },
+                { label: "No Letter Sent", value: stats.pending, color: "#6b7280", bg: "#f9fafb", statusKey: "PENDING" },
+                { label: "Send Letter 2", value: stats.needL2, color: "#dc2626", bg: "#fef2f2", statusKey: "AWAITING_L2" },
+                { label: "Needs DM Sign-Off", value: stats.needSignoff, color: "#7c3aed", bg: "#f5f3ff", statusKey: "AWAITING_SIGNOFF" },
+                { label: "Ready for Lien", value: stats.approved, color: "#059669", bg: "#ecfdf5", statusKey: "APPROVED" },
+              ].map(s => (
+                <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: "18px 20px", cursor: "pointer" }} onClick={() => { setFilterStatus(s.statusKey); setView("units"); }}>
+                  <p style={{ margin: 0, fontSize: 28, fontWeight: 800, color: s.color }}>{s.value}</p>
+                  <p style={{ margin: "4px 0 0", fontSize: 12, color: s.color, fontWeight: 600 }}>{s.label}</p>
+                </div>
+              ))}
+            </div>
+
+            {(stats.needL2 > 0 || stats.needSignoff > 0) && (
+              <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20, marginBottom: 20 }}>
+                <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700, color: "#0f172a" }}>🚨 Urgent Actions</h3>
+                {myUnits.filter(u => ["AWAITING_L2", "AWAITING_SIGNOFF"].includes(getStatus(u))).slice(0, 8).map(unit => {
+                  const s = getStatus(unit);
+                  return (
+                    <div key={unit.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f3f4f6" }}>
+                      <div>
+                        <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: "#0f172a" }}>{unit.unit_number} — {unit.facility_name}</p>
+                        <Badge status={s} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        {s === "AWAITING_L2" && currentUser.role !== "dm" && <Btn small variant="danger" onClick={() => setModal({ type: "log_letter2", unit })}>Log Letter 2</Btn>}
+                        {s === "AWAITING_SIGNOFF" && currentUser.role !== "manager" && <Btn small variant="success" onClick={() => setModal({ type: "dm_signoff", unit })}>Sign Off</Btn>}
+                        <Btn small variant="ghost" onClick={() => setModal({ type: "view_unit", unit })}>View</Btn>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: "#0f172a" }}>All Tracked Units</h3>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {(currentUser.role === "manager" || currentUser.role === "admin") && <Btn small onClick={() => setModal({ type: "add_unit" })}>+ Add Unit</Btn>}
+                  <Btn small variant="secondary" onClick={() => setView("units")}>View All →</Btn>
+                </div>
+              </div>
+              {myUnits.length === 0 ? (
+                <p style={{ color: "#9ca3af", fontSize: 14, textAlign: "center", padding: "20px 0" }}>No units tracked yet.</p>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "2px solid #f3f4f6" }}>
+                        {["Unit / Facility", "DM", "Status", "Timeline", "Actions"].map(h => (
+                          <th key={h} style={{ padding: "8px 16px", textAlign: "left", fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>{myUnits.slice(0, 10).map(u => <UnitRow key={u.id} unit={u} />)}</tbody>
+                  </table>
+                  {myUnits.length > 10 && <p style={{ textAlign: "center", padding: "12px 0 0", fontSize: 13, color: "#6b7280" }}>Showing 10 of {myUnits.length}. <button onClick={() => setView("units")} style={{ background: "none", border: "none", color: "#1e40af", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>View all →</button></p>}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {view === "units" && (
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Units ({filteredUnits.length})</h2>
+              {(currentUser.role === "manager" || currentUser.role === "admin") && <Btn onClick={() => setModal({ type: "add_unit" })}>+ Add Unit</Btn>}
+            </div>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 16, marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+              <Input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search unit # or facility..." style={{ maxWidth: 240 }} />
+              <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)} style={{ padding: "9px 12px", border: "1px solid #d1d5db", borderRadius: 7, fontSize: 14 }}>
+                <option value="ALL">All Statuses</option>
+                {Object.entries(STATUS_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+              </select>
+              <select value={filterFacility} onChange={e => setFilterFacility(e.target.value)} style={{ padding: "9px 12px", border: "1px solid #d1d5db", borderRadius: 7, fontSize: 14, maxWidth: 280 }}>
+                <option value="ALL">All Facilities</option>
+                {myFacilities.map(f => <option key={f.code} value={f.code}>{f.name}</option>)}
+              </select>
+              {(filterStatus !== "ALL" || filterFacility !== "ALL" || searchQ) && <Btn small variant="ghost" onClick={() => { setFilterStatus("ALL"); setFilterFacility("ALL"); setSearchQ(""); }}>Clear</Btn>}
+            </div>
+            <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", overflow: "hidden" }}>
+              {filteredUnits.length === 0 ? (
+                <p style={{ color: "#9ca3af", fontSize: 14, textAlign: "center", padding: "40px 0" }}>No units match your filters.</p>
+              ) : (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ borderBottom: "2px solid #f3f4f6", background: "#f8fafc" }}>
+                        {["Unit / Facility", "DM", "Status", "Timeline", "Actions"].map(h => (
+                          <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>{filteredUnits.map(u => <UnitRow key={u.id} unit={u} />)}</tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {view === "admin" && currentUser.role === "admin" && (
+          <div>
+            <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Admin</h2>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+              <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
+                <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700 }}>Quick Add Unit</h3>
+                <Btn onClick={() => setModal({ type: "add_unit" })}>+ Add Unit to Any Facility</Btn>
+              </div>
+              <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
+                <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700 }}>System Stats</h3>
+                <p style={{ margin: "4px 0", fontSize: 13 }}>Total units tracked: <strong>{units.length}</strong></p>
+                <p style={{ margin: "4px 0", fontSize: 13 }}>Total facilities: <strong>{FACILITIES_DATA.length}</strong></p>
+                <p style={{ margin: "4px 0", fontSize: 13 }}>Approved for lien: <strong>{units.filter(u => getStatus(u) === "APPROVED").length}</strong></p>
+                <p style={{ margin: "4px 0", fontSize: 13 }}>Database: <strong style={{ color: dbError ? "#dc2626" : "#059669" }}>{dbError ? "⚠ Error" : "✓ Connected"}</strong></p>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {renderModal()}
+    </div>
+  );
+}
+
+// ── MODAL COMPONENTS (must be outside App to avoid hook violations) ──
+
+function AddUnitModal({ facilities, onAdd, onClose, saving }) {
+  const [fCode, setFCode] = useState(facilities[0]?.code || "");
+  const [uName, setUName] = useState("");
+  const [note, setNote] = useState("");
+  return (
+    <Modal title="Add Unit to No Lease Tracker" onClose={onClose}>
+      <Field label="Facility">
+        <select value={fCode} onChange={e => setFCode(e.target.value)} style={{ width: "100%", padding: "9px 12px", border: "1px solid #d1d5db", borderRadius: 7, fontSize: 14 }}>
+          {facilities.map(f => <option key={f.code} value={f.code}>{f.name} ({f.code})</option>)}
+        </select>
+      </Field>
+      <Field label="Unit Number / Name">
+        <Input value={uName} onChange={e => setUName(e.target.value)} placeholder="e.g. 142, C27, H213" />
+      </Field>
+      <Field label="Notes" hint="Describe why this unit needs a no lease process">
+        <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} placeholder="Missing lease — tenant has been month-to-month since 2023..." style={{ width: "100%", padding: "9px 12px", border: "1px solid #d1d5db", borderRadius: 7, fontSize: 14, boxSizing: "border-box", resize: "vertical" }} />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onAdd({ facilityCode: fCode, unitName: uName, note })} disabled={!uName.trim() || saving}>Add Unit</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function Letter1Modal({ unit, onSave, onClose, saving }) {
+  const [date, setDate] = useState(today());
+  return (
+    <Modal title={`Log Letter 1 — Unit ${unit.unit_number}`} onClose={onClose}>
+      <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7280" }}>{unit.facility_name}</p>
+      <Field label="Date Letter 1 Was Sent (via certified mail)" hint="Letter 2 reminder will be sent on Day 32 from this date.">
+        <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} />
+      </Field>
+      <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+        <p style={{ margin: 0, fontSize: 13, color: "#92400e", fontWeight: 600 }}>⚠ Important</p>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#92400e" }}>By logging this date, you confirm that Letter 1 was sent via certified mail on this date.</p>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onSave(unit, date)} disabled={saving}>Confirm & Log Letter 1</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function Letter2Modal({ unit, onSave, onClose, saving }) {
+  const earliest = addDays(unit.letter1_date, 32);
+  const [date, setDate] = useState(today() >= earliest ? today() : earliest);
+  const [link, setLink] = useState("");
+  const tooEarly = date < earliest;
+  return (
+    <Modal title={`Log Letter 2 — Unit ${unit.unit_number}`} onClose={onClose}>
+      <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7280" }}>{unit.facility_name}</p>
+      <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+        <p style={{ margin: 0, fontSize: 13, color: "#166534" }}>Letter 1 was sent: <strong>{formatDate(unit.letter1_date)}</strong></p>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#166534" }}>Earliest valid date for Letter 2: <strong>{formatDate(earliest)}</strong></p>
+      </div>
+      <Field label="Date Letter 2 Was Sent (via certified mail)">
+        <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} style={tooEarly ? { borderColor: "#ef4444" } : {}} />
+        {tooEarly && <p style={{ margin: "4px 0 0", fontSize: 12, color: "#dc2626", fontWeight: 600 }}>⛔ Too early. Must wait until {formatDate(earliest)}. Contact your DM.</p>}
+      </Field>
+      <Field label="Dropbox Link — Certificate of Mailing (Letter 2)" hint="Upload to Dropbox and paste the share link here.">
+        <Input value={link} onChange={e => setLink(e.target.value)} placeholder="https://www.dropbox.com/..." />
+      </Field>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onSave(unit, date, link)} disabled={tooEarly || !link.trim() || saving}>Confirm & Log Letter 2</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function SignoffModal({ unit, onSave, onClose, saving }) {
+  const [link1, setLink1] = useState(unit.letter1_dropbox_url || "");
+  const [link2, setLink2] = useState(unit.letter2_dropbox_url || "");
+  const [confirmed, setConfirmed] = useState(false);
+  const gap = unit.letter1_date && unit.letter2_date ? daysBetween(unit.letter1_date, unit.letter2_date) : 0;
+  const gapOk = gap >= 30;
+  return (
+    <Modal title={`DM Sign-Off — Unit ${unit.unit_number}`} onClose={onClose}>
+      <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7280" }}>{unit.facility_name}</p>
+      <div style={{ background: gapOk ? "#f0fdf4" : "#fef2f2", border: `1px solid ${gapOk ? "#bbf7d0" : "#fecaca"}`, borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+        <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: gapOk ? "#166534" : "#991b1b" }}>
+          {gapOk ? "✓" : "⚠"} Gap between letters: <strong>{gap} days</strong> {gapOk ? "(meets 30-day minimum)" : "(BELOW 30-day minimum — do not sign off)"}
+        </p>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7280" }}>Letter 1: {formatDate(unit.letter1_date)} · Letter 2: {formatDate(unit.letter2_date)}</p>
+      </div>
+      <Field label="Dropbox Link — Certificate of Mailing (Letter 1)">
+        <Input value={link1} onChange={e => setLink1(e.target.value)} placeholder="https://www.dropbox.com/..." />
+        {link1 && <a href={link1} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#1e40af", marginTop: 4, display: "inline-block" }}>Open Letter 1 Certificate ↗</a>}
+      </Field>
+      <Field label="Dropbox Link — Certificate of Mailing (Letter 2)">
+        <Input value={link2} onChange={e => setLink2(e.target.value)} placeholder="https://www.dropbox.com/..." />
+        {link2 && <a href={link2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#1e40af", marginTop: 4, display: "inline-block" }}>Open Letter 2 Certificate ↗</a>}
+      </Field>
+      <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+        <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+          <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ marginTop: 2 }} />
+          <span style={{ fontSize: 13, color: "#374151" }}>I have reviewed both certificates and confirm the letters were sent at least 30 days apart. I authorize this unit to proceed to the lien notice process.</span>
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
+        <Btn variant="success" onClick={() => onSave(unit, confirmed, link1, link2)} disabled={!confirmed || !gapOk || saving}>Approve & Sign Off</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function ViewUnitModal({ unit, fac, currentUser, onDelete, onClose }) {
+  const status = getStatus(unit);
+  return (
+    <Modal title={`Unit ${unit.unit_number} — ${unit.facility_name}`} onClose={onClose}>
+      <div style={{ marginBottom: 16 }}><Badge status={status} /></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", marginBottom: 16 }}>
+        {[["Facility", unit.facility_name], ["Unit #", unit.unit_number], ["DM", fac?.dmName], ["Manager", fac?.managerName || "—"], ["Added", formatDate(unit.created_at?.split("T")[0])]].map(([k, v]) => (
+          <div key={k}><p style={{ margin: 0, fontSize: 12, color: "#9ca3af", fontWeight: 600 }}>{k}</p><p style={{ margin: "2px 0 0", fontSize: 13, color: "#111827" }}>{v}</p></div>
+        ))}
+      </div>
+      {unit.note && <div style={{ background: "#f9fafb", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}><p style={{ margin: 0, fontSize: 13, color: "#6b7280", fontStyle: "italic" }}>"{unit.note}"</p></div>}
+      <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
+        {unit.letter1_date && <p style={{ margin: "4px 0", fontSize: 13 }}><strong>Letter 1:</strong> {formatDate(unit.letter1_date)}{unit.letter1_logged_by ? ` — by ${unit.letter1_logged_by}` : ""}</p>}
+        {unit.letter2_date && <p style={{ margin: "4px 0", fontSize: 13 }}><strong>Letter 2:</strong> {formatDate(unit.letter2_date)}{unit.letter2_logged_by ? ` — by ${unit.letter2_logged_by}` : ""}</p>}
+        {unit.letter2_dropbox_url && <p style={{ margin: "4px 0", fontSize: 13 }}><a href={unit.letter2_dropbox_url} target="_blank" rel="noreferrer" style={{ color: "#1e40af" }}>View L2 Certificate ↗</a></p>}
+        {unit.dm_approved && <p style={{ margin: "4px 0", fontSize: 13, color: "#059669", fontWeight: 600 }}>✓ DM Approved: {formatDate(unit.dm_approved_at?.split("T")[0])} by {unit.dm_approved_by}</p>}
+      </div>
+      {currentUser?.role === "admin" && (
+        <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12, marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
+          <Btn variant="danger" small onClick={() => { if (confirm("Delete this unit?")) onDelete(unit.id); }}>Delete Unit</Btn>
+        </div>
+      )}
+    </Modal>
+  );
+}
