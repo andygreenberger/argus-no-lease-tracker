@@ -82,6 +82,75 @@ const buildDefaultUsers = () => {
 
 const ALL_USERS = buildDefaultUsers();
 
+// ─── EXCEL EXPORT ────────────────────────────────────────────────────────────
+const exportToExcel = (units, facilities) => {
+  const getFac = (code) => facilities.find(f => f.code === code);
+
+  const buckets = [
+    { label: "1 - No Letter Sent", statuses: ["PENDING"] },
+    { label: "2 - Letter 1 In Progress", statuses: ["AWAITING_L2_EARLY"] },
+    { label: "3 - Send Letter 2 Now", statuses: ["AWAITING_L2"] },
+    { label: "4 - Awaiting DM Approval", statuses: ["AWAITING_SIGNOFF_EARLY", "AWAITING_SIGNOFF"] },
+    { label: "5 - Approved / Ready for Lien", statuses: ["APPROVED"] },
+  ];
+
+  const headers = [
+    "Stage", "Facility Code", "Facility Name", "State", "Unit Number",
+    "Status", "Notes", "Letter 1 Date", "Letter 1 Logged By",
+    "Letter 2 Date", "Letter 2 Logged By",
+    "DM Approved", "DM Approved At", "DM Approved By",
+    "DM Name", "DM Email", "Manager Name", "Manager Email",
+    "RD Name", "RD Email", "Added By", "Created At"
+  ];
+
+  const rows = [];
+  buckets.forEach(bucket => {
+    const bucketUnits = units.filter(u => bucket.statuses.includes(getStatus(u)));
+    bucketUnits.forEach(u => {
+      const fac = getFac(u.facility_code) || {};
+      rows.push([
+        bucket.label,
+        u.facility_code || "",
+        u.facility_name || "",
+        fac.state || "",
+        u.unit_number || "",
+        STATUS_CONFIG[getStatus(u)]?.label || "",
+        u.note || "",
+        u.letter1_date || "",
+        u.letter1_logged_by || "",
+        u.letter2_date || "",
+        u.letter2_logged_by || "",
+        u.dm_approved ? "Yes" : "No",
+        u.dm_approved_at ? u.dm_approved_at.split("T")[0] : "",
+        u.dm_approved_by || "",
+        fac.dmName || "",
+        fac.dmEmail || "",
+        fac.managerName || "",
+        fac.managerEmail || "",
+        fac.rdName || "",
+        fac.rdEmail || "",
+        u.added_by || "",
+        u.created_at ? u.created_at.split("T")[0] : "",
+      ]);
+    });
+  });
+
+  // Build CSV
+  const escape = (v) => {
+    const s = String(v);
+    if (s.includes(",") || s.includes('"') || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  const csv = [headers, ...rows].map(row => row.map(escape).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `argus-no-lease-${today()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
 // ─── COMPONENTS ──────────────────────────────────────────────────────────────
 const Badge = ({ status }) => {
   const cfg = STATUS_CONFIG[status];
@@ -124,6 +193,7 @@ const Btn = ({ children, onClick, variant = "primary", small, disabled, style: s
     danger: { background: "#dc2626", color: "#fff", border: "none" },
     success: { background: "#059669", color: "#fff", border: "none" },
     ghost: { background: "transparent", color: "#6b7280", border: "1px solid #e5e7eb" },
+    export: { background: "#0f766e", color: "#fff", border: "none" },
   };
   return (
     <button onClick={onClick} disabled={disabled} style={{ padding: small ? "6px 12px" : "9px 18px", borderRadius: 7, fontSize: small ? 12 : 14, fontWeight: 600, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.5 : 1, ...styles[variant], ...s }}>
@@ -154,7 +224,6 @@ export default function App() {
     setTimeout(() => setToast(null), 3500);
   };
 
-  // Load units from Supabase
   const loadUnits = async () => {
     try {
       const data = await sb("units?order=created_at.desc");
@@ -236,7 +305,7 @@ export default function App() {
   const updateUnit = async (id, fields) => {
     setSaving(true);
     try {
-      const result = await sb(`units?id=eq.${id}`, {
+      await sb(`units?id=eq.${id}`, {
         method: "PATCH",
         body: JSON.stringify(fields),
       });
@@ -249,28 +318,26 @@ export default function App() {
 
   const logLetter1 = async (unit, date) => {
     await updateUnit(unit.id, { letter1_date: date, letter1_logged_by: currentUser.email, status: "awaiting_l2" });
-    showToast("Letter 1 date saved. Reminder scheduled for Day 32.");
+    showToast("Letter 1 date saved.");
     setModal(null);
   };
 
-  const logLetter2 = async (unit, date, dropboxLink) => {
+  const logLetter2 = async (unit, date) => {
     if (daysBetween(unit.letter1_date, date) < 32) {
       showToast("ERROR: Letter 2 sent too early. Must be at least 32 days after Letter 1.", "error");
       return;
     }
-    await updateUnit(unit.id, { letter2_date: date, letter2_dropbox_url: dropboxLink, letter2_logged_by: currentUser.email, status: "awaiting_signoff" });
-    showToast("Letter 2 logged. DM sign-off reminder scheduled for Day 32.");
+    await updateUnit(unit.id, { letter2_date: date, letter2_logged_by: currentUser.email, status: "awaiting_signoff" });
+    showToast("Letter 2 logged. DM sign-off required.");
     setModal(null);
   };
 
-  const dmSignoff = async (unit, confirmed, dropboxLink1, dropboxLink2) => {
+  const dmSignoff = async (unit, confirmed) => {
     if (!confirmed) return;
     await updateUnit(unit.id, {
       dm_approved: true,
       dm_approved_at: new Date().toISOString(),
       dm_approved_by: currentUser.email,
-      letter1_dropbox_url: dropboxLink1,
-      letter2_dropbox_url: dropboxLink2,
       status: "approved",
     });
     showToast("Sign-off complete. Unit approved for lien process.");
@@ -290,6 +357,36 @@ export default function App() {
     setSaving(false);
   };
 
+  // ── PRELOAD UNITS (admin only) ──
+  const PRELOAD_UNITS = [{"facility_code":"L168","facility_name":"24-7 Automated Storage","unit_number":"096"},{"facility_code":"L168","facility_name":"24-7 Automated Storage","unit_number":"195"},{"facility_code":"L168","facility_name":"24-7 Automated Storage","unit_number":"197"},{"facility_code":"L266","facility_name":"303 Self Storage Rino","unit_number":"344"},{"facility_code":"L266","facility_name":"303 Self Storage Rino","unit_number":"40"},{"facility_code":"L266","facility_name":"303 Self Storage Rino","unit_number":"445"},{"facility_code":"L266","facility_name":"303 Self Storage Rino","unit_number":"488"},{"facility_code":"L266","facility_name":"303 Self Storage Rino","unit_number":"522"},{"facility_code":"L400","facility_name":"Aardvark Self Storage","unit_number":"B193"},{"facility_code":"L400","facility_name":"Aardvark Self Storage","unit_number":"E031"},{"facility_code":"L027","facility_name":"A-Secured RV & Vehicle Storage","unit_number":"J130"},{"facility_code":"L027","facility_name":"A-Secured RV & Vehicle Storage","unit_number":"M116"},{"facility_code":"L053","facility_name":"Aardvark Self Storage","unit_number":"B003"},{"facility_code":"L085","facility_name":"Alpha Self Storage","unit_number":"RV005"},{"facility_code":"L225","facility_name":"American Self Storage - Wilmot","unit_number":"0101"},{"facility_code":"L225","facility_name":"American Self Storage - Wilmot","unit_number":"0430"},{"facility_code":"L225","facility_name":"American Self Storage - Wilmot","unit_number":"0556"},{"facility_code":"L298","facility_name":"Belmont Self Storage","unit_number":"G35"},{"facility_code":"L298","facility_name":"Belmont Self Storage","unit_number":"R05"},{"facility_code":"L298","facility_name":"Belmont Self Storage","unit_number":"U17"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"00071"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"00183"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"00437"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"00438"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"00480"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"00490"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"13966"},{"facility_code":"L394","facility_name":"Bend Sentry Storage","unit_number":"50419"},{"facility_code":"L195","facility_name":"Boulder Storage Center","unit_number":"612"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"104"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"107"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"131"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"144"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"30"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"68"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"88"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"94"},{"facility_code":"L361","facility_name":"Brooklyn Self Storage","unit_number":"95A"},{"facility_code":"L146","facility_name":"Casa Grande Self Storage","unit_number":"G01"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"1335"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"1337"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"1516"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"201"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"745"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"841"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"854"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"948"},{"facility_code":"L230","facility_name":"Clover Basin Self Storage","unit_number":"967"},{"facility_code":"L284","facility_name":"Continental Self Storage","unit_number":"F343A"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"A222"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"B102"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"B208"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"B216"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"C103"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"C124"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"C126"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"C141"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"D104"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"D128"},{"facility_code":"L362","facility_name":"Dayville Self Storage","unit_number":"D215"},{"facility_code":"L416","facility_name":"Dove Valley RV, Boat and Self Storage","unit_number":"031001"},{"facility_code":"L416","facility_name":"Dove Valley RV, Boat and Self Storage","unit_number":"031023"},{"facility_code":"L416","facility_name":"Dove Valley RV, Boat and Self Storage","unit_number":"EE24"},{"facility_code":"L416","facility_name":"Dove Valley RV, Boat and Self Storage","unit_number":"GG16"},{"facility_code":"L416","facility_name":"Dove Valley RV, Boat and Self Storage","unit_number":"JJ20"},{"facility_code":"L398","facility_name":"Fort Lowell Self Storage","unit_number":"B23"},{"facility_code":"L398","facility_name":"Fort Lowell Self Storage","unit_number":"E50"},{"facility_code":"L392","facility_name":"Georgetown Mini Storage","unit_number":"104"},{"facility_code":"L112","facility_name":"Highway 160 Self Storage","unit_number":"121"},{"facility_code":"L112","facility_name":"Highway 160 Self Storage","unit_number":"143"},{"facility_code":"L112","facility_name":"Highway 160 Self Storage","unit_number":"150"},{"facility_code":"L404","facility_name":"Hot Springs Self Storage","unit_number":"0283"},{"facility_code":"L243","facility_name":"I-25 Self Storage","unit_number":"588"},{"facility_code":"L307","facility_name":"L&L Mini Storage","unit_number":"021"},{"facility_code":"L307","facility_name":"L&L Mini Storage","unit_number":"103"},{"facility_code":"L307","facility_name":"L&L Mini Storage","unit_number":"PS27"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"B26"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"B31"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"C51"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"D38"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"E45"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"E54"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"E57"},{"facility_code":"L410","facility_name":"Las Alturas Self Storage","unit_number":"E73"},{"facility_code":"L097","facility_name":"Mary's Magazine Self Storage","unit_number":"019"},{"facility_code":"L097","facility_name":"Mary's Magazine Self Storage","unit_number":"420"},{"facility_code":"L097","facility_name":"Mary's Magazine Self Storage","unit_number":"B002"},{"facility_code":"L360","facility_name":"Mechanic Street Self Storage","unit_number":"220"},{"facility_code":"L360","facility_name":"Mechanic Street Self Storage","unit_number":"416"},{"facility_code":"L360","facility_name":"Mechanic Street Self Storage","unit_number":"608"},{"facility_code":"L360","facility_name":"Mechanic Street Self Storage","unit_number":"710"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"C132"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"E117"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"E122"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"E131"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"G104"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"J103"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"K108"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"M127"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"R104"},{"facility_code":"L357","facility_name":"Mulberry Storage Center","unit_number":"S101"},{"facility_code":"L419","facility_name":"Nest Self Storage- Lafayette","unit_number":"151"},{"facility_code":"L419","facility_name":"Nest Self Storage- Lafayette","unit_number":"157"},{"facility_code":"L106","facility_name":"New Frontier Bennett","unit_number":"E105"},{"facility_code":"L106","facility_name":"New Frontier Bennett","unit_number":"J189"},{"facility_code":"L106","facility_name":"New Frontier Bennett","unit_number":"J194"},{"facility_code":"L106","facility_name":"New Frontier Bennett","unit_number":"J196"},{"facility_code":"L251","facility_name":"New Frontier Billings","unit_number":"036"},{"facility_code":"L251","facility_name":"New Frontier Billings","unit_number":"130"},{"facility_code":"L251","facility_name":"New Frontier Billings","unit_number":"541"},{"facility_code":"L251","facility_name":"New Frontier Billings","unit_number":"561"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"B25"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"C42"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"CON031"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"CON033"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"D44"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"H15"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"H32"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"H35"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"I30"},{"facility_code":"L318","facility_name":"New Frontier College","unit_number":"I752"},{"facility_code":"L228","facility_name":"New Frontier Self Storage - Hot Springs","unit_number":"J0133"},{"facility_code":"L228","facility_name":"New Frontier Self Storage - Hot Springs","unit_number":"L0049"},{"facility_code":"L228","facility_name":"New Frontier Self Storage - Hot Springs","unit_number":"M0040"},{"facility_code":"L421","facility_name":"New Frontier Self Storage - Monument","unit_number":"D128"},{"facility_code":"L421","facility_name":"New Frontier Self Storage - Monument","unit_number":"G227"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0033"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0046"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0049"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0054"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0058"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0094"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0099"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0102"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0104"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0110"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0155"},{"facility_code":"L261","facility_name":"New Frontier Red Wing","unit_number":"0156"},{"facility_code":"L413","facility_name":"New Frontier Self Storage - Spokane Valley","unit_number":"0058"},{"facility_code":"L413","facility_name":"New Frontier Self Storage - Spokane Valley","unit_number":"0412"},{"facility_code":"L413","facility_name":"New Frontier Self Storage - Spokane Valley","unit_number":"0615"},{"facility_code":"L383","facility_name":"Open Range Storage","unit_number":"A13"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"B017"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"C024"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"CC156"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"E112"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"E115"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"EE246"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"H041"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"K019"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"L070"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"L127"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"N020"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"P008"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"T019"},{"facility_code":"L330","facility_name":"Ray Self Storage - Church St.","unit_number":"W015"},{"facility_code":"L328","facility_name":"Ray Self Storage - Gate City","unit_number":"A011"},{"facility_code":"L328","facility_name":"Ray Self Storage - Gate City","unit_number":"B009"},{"facility_code":"L328","facility_name":"Ray Self Storage - Gate City","unit_number":"E005"},{"facility_code":"L328","facility_name":"Ray Self Storage - Gate City","unit_number":"E011"},{"facility_code":"L328","facility_name":"Ray Self Storage - Gate City","unit_number":"F040"},{"facility_code":"L328","facility_name":"Ray Self Storage - Gate City","unit_number":"F117"},{"facility_code":"L327","facility_name":"Ray Self Storage - Spring Garden","unit_number":"904"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"1000"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"1049"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3067"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3082"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3094"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3128"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3129"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3157"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3169"},{"facility_code":"L434","facility_name":"Red Rocks Self Storage - Aurora","unit_number":"3193"},{"facility_code":"L431","facility_name":"Red Rocks Self Storage - Chardonnay","unit_number":"3000"},{"facility_code":"L057","facility_name":"Rita Ranch RV & Self Storage","unit_number":"A021"},{"facility_code":"L089","facility_name":"Sentry Storage- Elk Grove 2","unit_number":"00016"},{"facility_code":"L089","facility_name":"Sentry Storage- Elk Grove 2","unit_number":"00212"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00067"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00095"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00181"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00215"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00625"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00633"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00740"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00747"},{"facility_code":"L082","facility_name":"Sentry Storage Madison","unit_number":"00980"},{"facility_code":"L152","facility_name":"Spare Feet Self Storage - Abilene","unit_number":"29C"},{"facility_code":"L199","facility_name":"StorEZ- Scottsdale","unit_number":"1112"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"201"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"206"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"316"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"6093"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"6128"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"613"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"637"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"639"},{"facility_code":"L256","facility_name":"Storage Station","unit_number":"641"}];
+
+  const runPreload = async () => {
+    if (!confirm(`This will insert ${PRELOAD_UNITS.length} units into the database. Any duplicates will be added again. Continue?`)) return;
+    setSaving(true);
+    let inserted = 0;
+    let errors = 0;
+    // Insert in batches of 20
+    const batchSize = 20;
+    for (let i = 0; i < PRELOAD_UNITS.length; i += batchSize) {
+      const batch = PRELOAD_UNITS.slice(i, i + batchSize).map(u => ({
+        facility_code: u.facility_code,
+        facility_name: u.facility_name,
+        unit_number: u.unit_number,
+        note: "Preloaded — manager must log letter dates to begin process.",
+        added_by: currentUser.email,
+      }));
+      try {
+        const result = await sb("units", { method: "POST", body: JSON.stringify(batch) });
+        inserted += result.length;
+      } catch (e) {
+        errors += batch.length;
+        console.error("Batch insert error:", e);
+      }
+    }
+    await loadUnits();
+    setSaving(false);
+    showToast(`Preload complete: ${inserted} units inserted${errors > 0 ? `, ${errors} errors` : ""}.`, errors > 0 ? "error" : "success");
+  };
 
   // ── MODALS ──
   const renderModal = () => {
@@ -410,7 +507,12 @@ export default function App() {
 
         {view === "dashboard" && (
           <div>
-            <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Overview</h2>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Overview</h2>
+              <Btn variant="export" onClick={() => exportToExcel(myUnits, myFacilities)}>
+                ⬇ Export to Excel
+              </Btn>
+            </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 16, marginBottom: 28 }}>
               {[
                 { label: "Total Units", value: stats.total, color: "#1e40af", bg: "#eff6ff", statusKey: "ALL" },
@@ -481,7 +583,10 @@ export default function App() {
           <div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
               <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Units ({filteredUnits.length})</h2>
-              {(currentUser.role === "manager" || currentUser.role === "admin") && <Btn onClick={() => setModal({ type: "add_unit" })}>+ Add Unit</Btn>}
+              <div style={{ display: "flex", gap: 10 }}>
+                <Btn variant="export" onClick={() => exportToExcel(myUnits, myFacilities)}>⬇ Export to Excel</Btn>
+                {(currentUser.role === "manager" || currentUser.role === "admin") && <Btn onClick={() => setModal({ type: "add_unit" })}>+ Add Unit</Btn>}
+              </div>
             </div>
             <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 16, marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
               <Input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Search unit # or facility..." style={{ maxWidth: 240 }} />
@@ -521,11 +626,21 @@ export default function App() {
             <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 700, color: "#0f172a" }}>Admin</h2>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
               <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
-                <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700 }}>Quick Add Unit</h3>
+                <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 700 }}>Quick Add Unit</h3>
                 <Btn onClick={() => setModal({ type: "add_unit" })}>+ Add Unit to Any Facility</Btn>
               </div>
               <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
-                <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700 }}>System Stats</h3>
+                <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 700 }}>Preload Units from Import</h3>
+                <p style={{ margin: "0 0 12px", fontSize: 13, color: "#6b7280" }}>Insert {PRELOAD_UNITS.length} units from the initial no-lease report. Units will be visible immediately — managers must log their own letter dates.</p>
+                <Btn variant="secondary" onClick={runPreload} disabled={saving}>⬆ Run Preload ({PRELOAD_UNITS.length} units)</Btn>
+              </div>
+              <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
+                <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 700 }}>Export Report</h3>
+                <p style={{ margin: "0 0 12px", fontSize: 13, color: "#6b7280" }}>Download all units you have access to as a CSV, sorted by stage.</p>
+                <Btn variant="export" onClick={() => exportToExcel(myUnits, myFacilities)}>⬇ Export to Excel (CSV)</Btn>
+              </div>
+              <div style={{ background: "#fff", borderRadius: 12, border: "1px solid #e5e7eb", padding: 20 }}>
+                <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 700 }}>System Stats</h3>
                 <p style={{ margin: "4px 0", fontSize: 13 }}>Total units tracked: <strong>{units.length}</strong></p>
                 <p style={{ margin: "4px 0", fontSize: 13 }}>Total facilities: <strong>{FACILITIES_DATA.length}</strong></p>
                 <p style={{ margin: "4px 0", fontSize: 13 }}>Approved for lien: <strong>{units.filter(u => getStatus(u) === "APPROVED").length}</strong></p>
@@ -541,7 +656,7 @@ export default function App() {
   );
 }
 
-// ── MODAL COMPONENTS (must be outside App to avoid hook violations) ──
+// ── MODAL COMPONENTS ──
 
 function AddUnitModal({ facilities, onAdd, onClose, saving }) {
   const [fCode, setFCode] = useState(facilities[0]?.code || "");
@@ -573,12 +688,12 @@ function Letter1Modal({ unit, onSave, onClose, saving }) {
   return (
     <Modal title={`Log Letter 1 — Unit ${unit.unit_number}`} onClose={onClose}>
       <p style={{ margin: "0 0 16px", fontSize: 14, color: "#6b7280" }}>{unit.facility_name}</p>
-      <Field label="Date Letter 1 Was Sent (via certified mail)" hint="Letter 2 reminder will be sent on Day 32 from this date.">
+      <Field label="Date Letter 1 Was Sent (via certified mail)" hint="Letter 2 can be logged on Day 32 or later from this date.">
         <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} />
       </Field>
       <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
         <p style={{ margin: 0, fontSize: 13, color: "#92400e", fontWeight: 600 }}>⚠ Important</p>
-        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#92400e" }}>By logging this date, you confirm that Letter 1 was sent via certified mail on this date.</p>
+        <p style={{ margin: "4px 0 0", fontSize: 13, color: "#92400e" }}>By logging this date, you confirm that Letter 1 was sent via certified mail on this date. Maintain physical records of the notice.</p>
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
@@ -591,7 +706,6 @@ function Letter1Modal({ unit, onSave, onClose, saving }) {
 function Letter2Modal({ unit, onSave, onClose, saving }) {
   const earliest = addDays(unit.letter1_date, 32);
   const [date, setDate] = useState(today() >= earliest ? today() : earliest);
-  const [link, setLink] = useState("");
   const tooEarly = date < earliest;
   return (
     <Modal title={`Log Letter 2 — Unit ${unit.unit_number}`} onClose={onClose}>
@@ -604,20 +718,18 @@ function Letter2Modal({ unit, onSave, onClose, saving }) {
         <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} style={tooEarly ? { borderColor: "#ef4444" } : {}} />
         {tooEarly && <p style={{ margin: "4px 0 0", fontSize: 12, color: "#dc2626", fontWeight: 600 }}>⛔ Too early. Must wait until {formatDate(earliest)}. Contact your DM.</p>}
       </Field>
-      <Field label="Dropbox Link — Certificate of Mailing (Letter 2)" hint="Upload to Dropbox and paste the share link here.">
-        <Input value={link} onChange={e => setLink(e.target.value)} placeholder="https://www.dropbox.com/..." />
-      </Field>
+      <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+        <p style={{ margin: 0, fontSize: 13, color: "#0c4a6e" }}>📁 Maintain physical records of this notice and provide copies directly to your DM for review.</p>
+      </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 8 }}>
         <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-        <Btn onClick={() => onSave(unit, date, link)} disabled={tooEarly || !link.trim() || saving}>Confirm & Log Letter 2</Btn>
+        <Btn onClick={() => onSave(unit, date)} disabled={tooEarly || saving}>Confirm & Log Letter 2</Btn>
       </div>
     </Modal>
   );
 }
 
 function SignoffModal({ unit, onSave, onClose, saving }) {
-  const [link1, setLink1] = useState(unit.letter1_dropbox_url || "");
-  const [link2, setLink2] = useState(unit.letter2_dropbox_url || "");
   const [confirmed, setConfirmed] = useState(false);
   const gap = unit.letter1_date && unit.letter2_date ? daysBetween(unit.letter1_date, unit.letter2_date) : 0;
   const gapOk = gap >= 30;
@@ -630,23 +742,18 @@ function SignoffModal({ unit, onSave, onClose, saving }) {
         </p>
         <p style={{ margin: "4px 0 0", fontSize: 13, color: "#6b7280" }}>Letter 1: {formatDate(unit.letter1_date)} · Letter 2: {formatDate(unit.letter2_date)}</p>
       </div>
-      <Field label="Dropbox Link — Certificate of Mailing (Letter 1)">
-        <Input value={link1} onChange={e => setLink1(e.target.value)} placeholder="https://www.dropbox.com/..." />
-        {link1 && <a href={link1} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#1e40af", marginTop: 4, display: "inline-block" }}>Open Letter 1 Certificate ↗</a>}
-      </Field>
-      <Field label="Dropbox Link — Certificate of Mailing (Letter 2)">
-        <Input value={link2} onChange={e => setLink2(e.target.value)} placeholder="https://www.dropbox.com/..." />
-        {link2 && <a href={link2} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: "#1e40af", marginTop: 4, display: "inline-block" }}>Open Letter 2 Certificate ↗</a>}
-      </Field>
+      <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
+        <p style={{ margin: 0, fontSize: 13, color: "#0c4a6e" }}>📁 Verify that you have received physical copies of both notice records from the facility manager before signing off.</p>
+      </div>
       <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
         <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
           <input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} style={{ marginTop: 2 }} />
-          <span style={{ fontSize: 13, color: "#374151" }}>I have reviewed both certificates and confirm the letters were sent at least 30 days apart. I authorize this unit to proceed to the lien notice process.</span>
+          <span style={{ fontSize: 13, color: "#374151" }}>I have reviewed the physical notice records and confirm the letters were sent at least 30 days apart. I authorize this unit to proceed to the lien notice process.</span>
         </label>
       </div>
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <Btn variant="secondary" onClick={onClose}>Cancel</Btn>
-        <Btn variant="success" onClick={() => onSave(unit, confirmed, link1, link2)} disabled={!confirmed || !gapOk || saving}>Approve & Sign Off</Btn>
+        <Btn variant="success" onClick={() => onSave(unit, confirmed)} disabled={!confirmed || !gapOk || saving}>Approve & Sign Off</Btn>
       </div>
     </Modal>
   );
@@ -666,7 +773,6 @@ function ViewUnitModal({ unit, fac, currentUser, onDelete, onClose }) {
       <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12 }}>
         {unit.letter1_date && <p style={{ margin: "4px 0", fontSize: 13 }}><strong>Letter 1:</strong> {formatDate(unit.letter1_date)}{unit.letter1_logged_by ? ` — by ${unit.letter1_logged_by}` : ""}</p>}
         {unit.letter2_date && <p style={{ margin: "4px 0", fontSize: 13 }}><strong>Letter 2:</strong> {formatDate(unit.letter2_date)}{unit.letter2_logged_by ? ` — by ${unit.letter2_logged_by}` : ""}</p>}
-        {unit.letter2_dropbox_url && <p style={{ margin: "4px 0", fontSize: 13 }}><a href={unit.letter2_dropbox_url} target="_blank" rel="noreferrer" style={{ color: "#1e40af" }}>View L2 Certificate ↗</a></p>}
         {unit.dm_approved && <p style={{ margin: "4px 0", fontSize: 13, color: "#059669", fontWeight: 600 }}>✓ DM Approved: {formatDate(unit.dm_approved_at?.split("T")[0])} by {unit.dm_approved_by}</p>}
       </div>
       {currentUser?.role === "admin" && (
