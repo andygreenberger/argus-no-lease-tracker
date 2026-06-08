@@ -79,7 +79,7 @@ const buildDefaultUsers = () => {
     { id: "rd_rjurado", email: "rjurado@arguspsm.com", name: "Ruben Jurado", role: "rd", password: "argusops2026", facilities: rdFacilities["rjurado@arguspsm.com"] || [] },
     { id: "rd_dlay", email: "dlay@arguspsm.com", name: "Donna Lay", role: "rd", password: "argusops2026", facilities: rdFacilities["dlay@arguspsm.com"] || [] },
   ];
-  const admins = [{ id: "l2l_admin", email: "andy@late2lien.net", name: "Andy (L2L Admin)", role: "admin", password: "admin123", facilities: "ALL" }];
+  const admins = [{ id: "l2l_admin", email: "andy@late2lien.net", name: "Andy (L2L Admin)", role: "admin", password: "admin12345", facilities: "ALL" }];
   const dmMap = {};
   FACILITIES_DATA.forEach(f => {
     const key = f.dmEmail.toLowerCase();
@@ -433,7 +433,7 @@ export default function App() {
       if (status === "AWAITING_L2" && canEdit) return <Btn small variant="danger" onClick={() => setModal({ type: "log_letter2", unit })}>Log Letter 2 Now</Btn>;
       if (status === "AWAITING_L2_EARLY" && canEdit) return <Btn small variant="secondary" onClick={() => setModal({ type: "log_letter2", unit })}>Log Letter 2</Btn>;
       if (status === "AWAITING_SIGNOFF" && canSignoff) return <Btn small variant="success" onClick={() => setModal({ type: "dm_signoff", unit })}>Sign Off</Btn>;
-      if (status === "AWAITING_SIGNOFF_EARLY" && canSignoff) return <Btn small variant="ghost" onClick={() => setModal({ type: "dm_signoff", unit })}>Sign Off Early</Btn>;
+      // AWAITING_SIGNOFF_EARLY: no action — must wait full 32-day period
       return null;
     };
 
@@ -482,7 +482,7 @@ export default function App() {
           </Field>
           {loginErr && <p style={{ margin: "-8px 0 12px", fontSize: 13, color: "#dc2626" }}>{loginErr}</p>}
           <Btn onClick={login} style={{ width: "100%" }}>Sign In</Btn>
-          <p style={{ margin: "16px 0 0", fontSize: 12, color: "#9ca3af", textAlign: "center", fontFamily: "system-ui" }}>Default password: <code>argus2024</code> · Admin: <code>admin123</code></p>
+          
         </div>
       </div>
     );
@@ -515,7 +515,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{ textAlign: "right" }}>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{currentUser.name}</p>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 600 }}>{currentUser.role === "manager" ? "Manager" : currentUser.name}</p>
               <p style={{ margin: 0, fontSize: 11, color: "#64748b" }}>{roleLabel}</p>
             </div>
             <button onClick={logout} style={{ background: "#1e293b", color: "#94a3b8", border: "none", padding: "6px 12px", borderRadius: 7, fontSize: 12, cursor: "pointer" }}>Sign Out</button>
@@ -717,7 +717,7 @@ function Letter1Modal({ unit, onSave, onClose, saving, currentUser }) {
       <Field label="Date Letter 1 Was Sent (via certified mail)" hint="Letter 2 can be logged on Day 32 or later from this date.">
         <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} />
       </Field>
-      <Field label="Logged by" hint="Pre-filled from your account — edit if an assistant or floating manager is submitting this.">
+      <Field label="Logged by" hint="Pre-filled from system records — update if someone else is submitting this.">
         <Input value={actorName} onChange={e => setActorName(e.target.value)} placeholder="Your name" />
       </Field>
       <div style={{ background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
@@ -748,7 +748,7 @@ function Letter2Modal({ unit, onSave, onClose, saving, currentUser }) {
         <Input type="date" value={date} onChange={e => setDate(e.target.value)} max={today()} style={tooEarly ? { borderColor: "#ef4444" } : {}} />
         {tooEarly && <p style={{ margin: "4px 0 0", fontSize: 12, color: "#dc2626", fontWeight: 600 }}>⛔ Too early. Must wait until {formatDate(earliest)}. Contact your DM.</p>}
       </Field>
-      <Field label="Logged by" hint="Edit if an assistant or floating manager is submitting this.">
+      <Field label="Logged by" hint="Pre-filled from system records — update if someone else is submitting this.">
         <Input value={actorName} onChange={e => setActorName(e.target.value)} placeholder="Your name" />
       </Field>
       <div style={{ background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 8, padding: "12px 14px", marginBottom: 16 }}>
@@ -812,7 +812,7 @@ function ViewUnitModal({ unit, fac, currentUser, onDelete, onClose }) {
         {unit.letter2_date && <p style={{ margin: "4px 0", fontSize: 13 }}><strong>Letter 2:</strong> {formatDate(unit.letter2_date)}{unit.letter2_logged_by ? ` — by ${unit.letter2_logged_by}` : ""}</p>}
         {unit.dm_approved && <p style={{ margin: "4px 0", fontSize: 13, color: "#059669", fontWeight: 600 }}>✓ DM Approved: {formatDate(unit.dm_approved_at?.split("T")[0])} by {unit.dm_approved_by}</p>}
       </div>
-      {currentUser?.role === "admin" && (
+      {["admin", "executive", "rd", "dm"].includes(currentUser?.role) && (
         <div style={{ borderTop: "1px solid #f3f4f6", paddingTop: 12, marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
           <Btn variant="danger" small onClick={() => { if (confirm("Delete this unit?")) onDelete(unit.id); }}>Delete Unit</Btn>
         </div>
